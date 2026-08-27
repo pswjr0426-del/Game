@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3인 온라인 심해 레이싱</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0d1117; color: #f0f6fc; font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+        #game-wrapper { width: 100vw; max-width: 1280px; aspect-ratio: 16 / 9; max-height: 100vh; position: relative; background: #000; border-radius: 8px; overflow: hidden; }
+        #hud-top { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 20px; background: rgba(13, 17, 23, 0.85); padding: 10px 24px; border-radius: 30px; border: 1px solid #30363d; z-index: 10; font-size: 14px; }
+        #booster-panel { position: absolute; top: 65px; left: 50%; transform: translateX(-50%); width: 280px; text-align: center; z-index: 10; }
+        #booster-bar-box { width: 100%; height: 14px; background: #21262d; border-radius: 8px; overflow: hidden; border: 1px solid #30363d; margin-top: 4px; }
+        #booster-bar { width: 0%; height: 100%; background: linear-gradient(to right, #00d2ff, #3a7bd5); transition: width 0.1s; }
+        #weather-alert { position: absolute; top: 110px; left: 50%; transform: translateX(-50%); font-size: 16px; font-weight: 800; z-index: 10; text-shadow: 0 2px 6px #000; }
+        #blackout-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: black; opacity: 0; pointer-events: none; z-index: 15; transition: opacity 0.1s; }
+        #lightning-flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; z-index: 14; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(13, 17, 23, 0.92); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 20; }
+        .btn-start { padding: 12px 30px; background: #238636; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        .key { background: #21262d; padding: 2px 6px; border-radius: 4px; border: 1px solid #484f58; color: #58a6ff; font-weight: bold; }
+    </style>
+    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <div id="game-wrapper">
+        <div id="lightning-flash"></div>
+        <div id="blackout-overlay"></div>
+        <div id="hud-top">
+            <div>접속자: <span id="player-count" style="color:#58a6ff;">1</span>/3명</div>
+            <div>거리: <span id="distVal" style="color:#58a6ff;">0</span>m</div>
+            <div>수심: <span id="depthVal" style="color:#58a6ff;">0.0</span>m</div>
+        </div>
+        <div id="booster-panel">
+            <div style="font-size: 12px; color: #00d2ff; font-weight: bold;">⚡ 부스터 배터리</div>
+            <div id="booster-bar-box"><div id="booster-bar"></div></div>
+        </div>
+        <div id="weather-alert">날씨 접속 중...</div>
+        <div id="start-overlay" class="overlay">
+            <h1 style="color:#58a6ff; margin-bottom: 12px;">온라인 3인 멀티 레이싱</h1>
+            <p style="color:#8b949e; margin-bottom: 20px; text-align: center; line-height: 1.6;">
+                <span class="key">A</span>/<span class="key">D</span> 좌우 기울임 이동 | <span class="key">S</span> 잠수로 원형 링 배터리 충전<br>
+                <span class="key">W</span> 충전된 배터리만큼 부스터 폭발 가속!
+            </p>
+            <button class="btn-start" onclick="startGame()">참여하기</button>
+        </div>
+    </div>
+    <script>
+        const socket = io();
+        const container = document.getElementById('game-wrapper');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a192f);
+        scene.fog = new THREE.FogExp2(0x0a192f, 0.015);
+        const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        container.appendChild(renderer.domElement);
+        scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+        const cloudGroup = new THREE.Group();
+        const cloudGeo = new THREE.DodecahedronGeometry(3, 1);
+        const cloudMat = new THREE.MeshStandardMaterial({ color: 0x22252a });
+        for(let i=0; i<15; i++) {
+            const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+            cloud.position.set((Math.random()-0.5)*40, 15 + Math.random()*3, -10 + (Math.random()-0.5)*20);
+            cloudGroup.add(구름);
+        }
+        cloudGroup.visible = false;
+        scene.add(cloudGroup);
+        const trackMesh = new THREE.Mesh(new THREE.PlaneGeometry(30, 2000), new THREE.MeshStandardMaterial({ color: 0x0f2b48 }));
+        trackMesh.rotation.x = -Math.PI / 2;
+        trackMesh.position.z = -900;
+        scene.add(trackMesh);
+        const batteryRings = [];
+        const ringGeo = new THREE.TorusGeometry(1.5, 0.2, 16, 32);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+        for (let i = 0; i < 15; i++) {
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.set((Math.random() - 0.5) * 16, -3 - Math.random() * 9, -50 - (i * 50));
+            scene.add(ring);
+            batteryRings.push({ mesh: ring, active: true });
+        }
+        const otherPlayers = {};
+        let myId = null, myVehicle = null, isPlaying = false, isBlackout = false;
+        let playerX = 0, playerY = 0, distance = 0, batteryCharge = 0, currentSpeed = 1.0, keys = {};
+        function createVehicleMesh(colorHex) {
+            const group = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.0, 2.5), new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.5 }));
+            group.add(body);
+            scene.add(group);
+            return group;
+        }
+        socket.on('init', (data) => {
+            myId = data.id;
+            Object.keys(data.players).forEach(id => {
+                const p = data.players[id];
+                if (id === myId) myVehicle = createVehicleMesh(p.color);
+                else otherPlayers[id] = createVehicleMesh(p.color);
+            });
+            document.getElementById('player-count').innerText = Object.keys(data.players).length;
+        });
+        socket.on('playerJoined', (p) => {
+            if (p && p.id !== myId) {
+                otherPlayers[p.id] = createVehicleMesh(p.color);
+                document.getElementById('player-count').innerText = Object.keys(otherPlayers).length + 1;
+            }
+        });
+        socket.on('playerMoved', (p) => {
+            if (otherPlayers[p.id]) {
+                otherPlayers[p.id].position.set(p.x, p.y - 0.5, -5);
+                otherPlayers[p.id].rotation.z = p.rotZ;
+            }
+        });
+        socket.on('playerLeft', (id) => {
+            if (otherPlayers[id]) {
+                scene.remove(otherPlayers[id]);
+                delete otherPlayers[id];
+                document.getElementById('player-count').innerText = Object.keys(otherPlayers).length + 1;
+            }
+        });
+        socket.on('weatherUpdate', (data) => {
+            if (data.weather === 'STORM') {
+                cloudGroup.visible = true;
+                document.getElementById('weather-alert').innerText = "⛈️ 태풍 발생! (3초 번개 정전)";
+                document.getElementById('weather-alert').style.color = "#ff4d4f";
+                document.getElementById('lightning-flash').style.opacity = '1';
+                setTimeout(() => { document.getElementById('lightning-flash').style.opacity = '0'; }, 100);
+                setTimeout(() => {
+                    isBlackout = true;
+                    document.getElementById('blackout-overlay').style.opacity = '0.95';
+                    setTimeout(() => {
+                        isBlackout = false;
+                        document.getElementById('blackout-overlay').style.opacity = '0';
+                    }, 3000);
+                }, 200);
+            } else {
+                cloudGroup.visible = false;
+                document.getElementById('weather-alert').innerText = "☀️ 날씨: 맑음";
+                document.getElementById('weather-alert').style.color = "#58a6ff";
+            }
+        });
+        window.addEventListener('keydown', (e) => keys[e.code] = true);
+        window.addEventListener('keyup', (e) => keys[e.code] = false);
+        function startGame() {
+            document.getElementById('start-overlay').style.display = 'none';
+            isPlaying = true;
+        }
+        function animate() {
+            requestAnimationFrame(animate);
+            if (isPlaying && myVehicle && !isBlackout) {
+                let moveDir = 0;
+                if (keys['KeyA']) moveDir -= 1;
+                if (keys['KeyD']) moveDir += 1;
+                playerX += moveDir * 0.22;
+                playerX = Math.max(-10, Math.min(10, playerX));
+                myVehicle.rotation.z = THREE.MathUtils.lerp(myVehicle.rotation.z, -moveDir * 0.35, 0.1);
+                if (keys['KeyS']) playerY = THREE.MathUtils.lerp(playerY, -12.0, 0.08);
+                else playerY = THREE.MathUtils.lerp(playerY, 0.0, 0.08);
+                if (keys['KeyW'] && batteryCharge > 0) {
+                    currentSpeed = 2.8;
+                    batteryCharge = Math.max(0, batteryCharge - 0.5);
+                } else {
+                    currentSpeed = 1.0;
+                }
+                distance += currentSpeed * 1.2;
+                myVehicle.position.set(playerX, playerY - 0.5, -5);
+                batteryRings.forEach(r => {
+                    if (r.active) {
+                        r.mesh.position.z += currentSpeed * 1.2;
+                        if (myVehicle.position.distanceTo(r.mesh.position) < 2.5) {
+                            r.active = false;
+                            r.mesh.visible = false;
+                            batteryCharge = Math.min(100, batteryCharge + 35);
+                        }
+                        if (r.mesh.position.z > 5) {
+                            r.mesh.position.z = -700;
+                            r.mesh.position.x = (Math.random() - 0.5) * 16;
+                            r.mesh.position.y = -3 - Math.random() * 9;
+                            r.active = true;
+                            r.mesh.visible = true;
+                        }
+                    }
+                });
+                socket.emit('updateTransform', {
+                    x: playerX, y: playerY, dist: distance, rotZ: myVehicle.rotation.z
+                });
+                document.getElementById('distVal').innerText = Math.floor(distance);
+                document.getElementById('depthVal').innerText = Math.abs(playerY).toFixed(1);
+                document.getElementById('booster-bar').style.width = `${batteryCharge}%`;
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
